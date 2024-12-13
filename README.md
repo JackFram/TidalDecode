@@ -49,10 +49,17 @@ bash setup.sh
 ```
 
 ## Small Demo
-Run example:
+Run example for the PyTorch implementation:
 
 ```
 python examples/run_tidal_llama.py  --top_k 256 --model_name gradientai/Llama-3-8B-Instruct-Gradient-1048k
+```
+
+Run example for the CUDA implementation:
+
+```
+cd scripts
+bash test.sh
 ```
 
 ## Performance Evaluation
@@ -88,8 +95,8 @@ bash bench_efficiency_e2e.sh
 
 ## Future Plan
 This repo mainly reproduces the results in our [paper](https://arxiv.org/abs/2410.05076). As TidalDecode is flexible in the choice of the token selection layer, we are developing a library to support the efficient deployment of our method with flexible model configurations that suit users' accuracy/efficiency requirements.
-- [ ] Llama3 Model Support + GQA
-- [ ] Independent top-k selection by head
+- [x] Llama3 Model Support + GQA
+- [x] Independent top-k selection by head
 
 ## Reference
 ```
