@@ -57,6 +57,9 @@ class TDAttention(nn.Module):
 
     def _init_rope(self):
         # rope_theta is default to 1e4, as set in RoPE kernel API.
+        self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+        self.rope_theta = self.config.rope_theta
+
         rope_scaling = getattr(self.config, "rope_scaling", None)
         if rope_scaling is None:
             self.rope_scale = 1.0
@@ -138,33 +141,52 @@ class TDAttention(nn.Module):
         # Not transposed for Append kv cache NHD layout
         # if q_len == 1 and self.att_type == "sparse":
         #     print(self.layer_idx, hidden_states[0, 0, :5])
-        query_states = query_states.view(q_len, self.num_heads, self.head_dim)
-        key_states = key_states.view(q_len, self.num_key_value_heads, self.head_dim)
-        value_states = value_states.view(q_len, self.num_key_value_heads, self.head_dim)
+        if True:
+            # Test RoPE
+            query_states = query_states.view(
+                bsz, q_len, self.num_heads, self.head_dim
+            ).transpose(1, 2)
+            key_states = key_states.view(
+                bsz, q_len, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
+            value_states = value_states.view(
+                bsz, q_len, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
 
-        torch.cuda.nvtx.range_push("RoPE")
-        if self.rope_type == "llama2":
-            tidal.utils.apply_rope_in_place(
-                query_states,
-                key_states,
-                iController.kv_cache.seqlen - q_len,
-                rope_scale=self.rope_scale,
-            )
-        elif self.rope_type == "llama3":
-            tidal.utils.apply_llama31_rope_in_place(
-                query_states,
-                key_states,
-                iController.kv_cache.seqlen - q_len,
-                rope_scale=self.rope_scale,
-                rope_theta=self.rope_theta,
-                low_freq_factor=self.rope_config["low_freq_factor"],
-                high_freq_factor=self.rope_config["high_freq_factor"],
-                old_context_length=self.rope_config["original_max_position_embeddings"]
-            )
-        torch.cuda.nvtx.range_pop()
+            if iController.kv_cache.seqlen - q_len > 0:
+                position_ids[0, 0] = iController.kv_cache.seqlen - q_len
 
-        # query_states = torch.ones_like(query_states).to(query_states.device)
-        # key_states = torch.ones_like(key_states).to(key_states.device)  
+            cos, sin = self.rotary_emb(value_states, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            query_states = query_states.transpose(1, 2).view(q_len, self.num_heads, self.head_dim)
+            key_states = key_states.transpose(1, 2).view(q_len, self.num_key_value_heads, self.head_dim)
+            value_states = value_states.transpose(1, 2).view(q_len, self.num_key_value_heads, self.head_dim)
+        else:
+            query_states = query_states.view(q_len, self.num_heads, self.head_dim)
+            key_states = key_states.view(q_len, self.num_key_value_heads, self.head_dim)
+            value_states = value_states.view(q_len, self.num_key_value_heads, self.head_dim)
+
+            torch.cuda.nvtx.range_push("RoPE")
+            if self.rope_type == "llama2":
+                tidal.utils.apply_rope_in_place(
+                    query_states,
+                    key_states,
+                    iController.kv_cache.seqlen - q_len,
+                    rope_scale=self.rope_scale,
+                )
+            elif self.rope_type == "llama3":
+                tidal.utils.apply_llama31_rope_in_place(
+                    query_states,
+                    key_states,
+                    iController.kv_cache.seqlen - q_len,
+                    rope_scale=self.rope_scale,
+                    rope_theta=self.rope_theta,
+                    low_freq_factor=self.rope_config["low_freq_factor"],
+                    high_freq_factor=self.rope_config["high_freq_factor"],
+                    old_context_length=self.rope_config["original_max_position_embeddings"]
+                )
+            torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("append_kv")
         # Tidal manages KV-Cache internal (with PageAttention)
@@ -197,6 +219,7 @@ class TDAttention(nn.Module):
             if self.att_type == "full":
                 torch.cuda.nvtx.range_push("full_attn")
                 torch.cuda.synchronize()
+                # print(query_states[0, 0, :8], key_states[0, 0, :8], value_states[0, 0, :8])
                 attn_output = tidal.utils.decode_sparse_attn(
                     query_states,
                     iController,
@@ -204,6 +227,9 @@ class TDAttention(nn.Module):
                     iController.kv_indices_without_last,
                     False,
                 )
+                # print(iController.kv_indices_without_last)
+                # print(f"td-layer-{self.layer_idx}, attn_output: {attn_output[0, 0, 0]}")
+                # exit(0)
                 torch.cuda.synchronize()
                 torch.cuda.nvtx.range_pop()
             elif self.att_type == "search":
@@ -225,14 +251,21 @@ class TDAttention(nn.Module):
                 # tidal.utils.decode_topk(
                 #     iController,
                 # )
-                _, top_k_indices = torch.topk(iController.qk_product, k=31, dim=-1)
+                # print(iController.td_token_budget)
+                token_budget = min(iController.td_token_budget-1, iController.kv_indices_without_last.shape[1])
+                _, top_k_indices = torch.topk(iController.qk_product[:, :iController.kv_indices_without_last.shape[1]], k=token_budget, dim=-1)
+                # top_k_indices, _ = torch.sort(top_k_indices, dim=-1)
                 iController.top_k_indices = top_k_indices.int()
+                # if self.layer_idx == 13:
+                #     print(f"td-layer-{self.layer_idx}, qk_product: {iController.qk_product[0, 40:46]/1.44336}")
                 # if self.layer_idx == 2:
-                #     print(self.layer_idx, iController.qk_product[0, :61]/1.44336, query_states[0, 0, :20], key_states[0, 0, :20])
+                #     print(iController.kv_indices_without_last.shape, iController.top_k_indices.shape)
+                #     # print(self.layer_idx, iController.qk_product[0, :61]/1.44336, query_states[0, 0, :20], key_states[0, 0, :20])
                 # exit(0)
                 torch.cuda.synchronize()
                 torch.cuda.nvtx.range_pop()
                 # iController.top_k_indices = torch.ones((32, 32)).to(attn_output.device).int()
+                # print(f"td-layer-{self.layer_idx}, top_k_indices: {iController.top_k_indices[0]}")
                 
             elif self.att_type == "sparse":
                 # print(self.layer_idx, iController.top_k_indices)

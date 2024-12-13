@@ -52,6 +52,7 @@ class InferenceController:
         self.kv_indptr_for_approx_decode = None
 
         self.inference_token_budget = None
+        self.td_token_budget = token_budget
 
         self.qk_product = None
 

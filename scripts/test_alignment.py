@@ -139,6 +139,7 @@ def benchmark_tidal():
 
     # Prefill Stage
     question = "How many helicopters can a human eat in one sitting?"
+    # question = "How are you doing?"
     messages = [
         {
             "role": "system",
@@ -159,27 +160,30 @@ def benchmark_tidal():
     td_output = td_model.generate(input_ids=tokenized_chat.to(td_model.device), max_length=256, do_sample=False)
     print("question:", question)
     print("ref_output:", tokenizer.decode(ref_output[0, prompt_len:]))
+    print("-"*100)
     print("td_output:", tokenizer.decode(td_output[0, prompt_len:]))
     exit(0)
-    # ref_output_text = tokenized_chat.to(ref_model.device)
+    ref_output_text = tokenized_chat.to(ref_model.device)
     td_output_text = tokenized_chat.to(td_model.device)
 
     with torch.no_grad():
-        # ref_output = ref_model(input_ids=tokenized_chat.to(ref_model.device), use_cache=True)
+        ref_output = ref_model(input_ids=tokenized_chat.to(ref_model.device), use_cache=True)
         td_output = td_model(input_ids=tokenized_chat.to(td_model.device))
 
         for i in range(100):
-            # ref_next_token = ref_output.logits[:, -1].argmax(dim=-1, keepdim=True)
+            ref_next_token = ref_output.logits[:, -1].argmax(dim=-1, keepdim=True)
             td_next_token = td_output.logits[:, -1].argmax(dim=-1, keepdim=True)
-            # ref_output_text = torch.cat([ref_output_text, ref_next_token], dim=-1)
+            ref_output_text = torch.cat([ref_output_text, ref_next_token], dim=-1)
             td_output_text = torch.cat([td_output_text, td_next_token], dim=-1)
-            # assert ref_next_token.detach().item() == td_next_token.detach().item(), f"Next token mismatch at step {i}"
+            # print(ref_next_token, td_next_token)
+            assert ref_next_token.detach().item() == td_next_token.detach().item(), f"Next token mismatch at step {i}"
             # print(tokenizer.decode(ref_output_text[0]))
             # print(tokenizer.decode(td_output_text[0]))
-            # ref_output = ref_model(input_ids=ref_next_token, use_cache=True, past_key_values=ref_output.past_key_values)
             td_output = td_model(input_ids=td_next_token)
-            # exit(0)
-    # print(tokenizer.decode(ref_output[0]))
+            ref_output = ref_model(input_ids=ref_next_token, use_cache=True, past_key_values=ref_output.past_key_values)
+            # if i == 71:
+            #     exit(0)
+    print(tokenizer.decode(ref_output_text[0]))
     print(tokenizer.decode(td_output_text[0]))
     
 
